@@ -846,11 +846,13 @@ public class WorkingMessage {
         // Mark this message as discarded in order to make saveDraft() no-op.
         mDiscarded = true;
 
-        // Delete our MMS message, if there is one.
-        if (mMessageUri != null) {
-            asyncDelete(mMessageUri, null, null);
+        // Delete any associated drafts if there are any.
+        if (mHasMmsDraft) {
+            asyncDeleteDraftMmsMessage(mConversation);
         }
-
+        if (mHasSmsDraft) {
+            asyncDeleteDraftSmsMessage(mConversation);
+        }
         clearConversation(mConversation, true);
     }
 
@@ -865,6 +867,47 @@ public class WorkingMessage {
      */
     public boolean isDiscarded() {
         return mDiscarded;
+    }
+
+    /**
+     * To be called from our Activity's onSaveInstanceState() to give us a chance
+     * to stow our state away for later retrieval.
+     *
+     * @param bundle The Bundle passed in to onSaveInstanceState
+     */
+    public void writeStateToBundle(Bundle bundle) {
+        if (hasSubject()) {
+            bundle.putString("subject", mSubject.toString());
+        }
+
+        if (mMessageUri != null) {
+            bundle.putParcelable("msg_uri", mMessageUri);
+        } else if (hasText()) {
+            bundle.putString("sms_body", mText.toString());
+        }
+    }
+
+    /**
+     * To be called from our Activity's onCreate() if the activity manager
+     * has given it a Bundle to reinflate
+     * @param bundle The Bundle passed in to onCreate
+     */
+    public void readStateFromBundle(Bundle bundle) {
+        if (bundle == null) {
+            return;
+        }
+
+        String subject = bundle.getString("subject");
+        setSubject(subject, false);
+
+        Uri uri = (Uri)bundle.getParcelable("msg_uri");
+        if (uri != null) {
+            loadFromUri(uri);
+            return;
+        } else {
+            String body = bundle.getString("sms_body");
+            mText = body;
+        }
     }
 
     /**
@@ -888,7 +931,6 @@ public class WorkingMessage {
                 s = "{...} len=" + size;
             }
         }
-        Log.i(TAG, "setWorkingRecipients: numbers=" + s);
     }
 
     private void dumpWorkingRecipients() {

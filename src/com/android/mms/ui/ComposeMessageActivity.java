@@ -66,6 +66,7 @@ import android.drm.mobile1.DrmRawContent;
 import android.graphics.drawable.Drawable;
 import android.media.RingtoneManager;
 import android.net.Uri;
+import android.os.AsyncTask;
 import android.os.Bundle;
 import android.os.Environment;
 import android.os.Handler;
@@ -140,6 +141,7 @@ import com.google.android.mms.pdu.PduBody;
 import com.google.android.mms.pdu.PduPart;
 import com.google.android.mms.pdu.PduPersister;
 import com.google.android.mms.pdu.SendReq;
+import com.google.android.mms.util.PduCache;
 import com.android.mms.model.SlideModel;
 import com.android.mms.model.SlideshowModel;
 import com.android.mms.transaction.MessagingNotification;
@@ -272,6 +274,7 @@ public class ComposeMessageActivity extends Activity
     private WorkingMessage mWorkingMessage;         // The message currently being composed.
 
     private AlertDialog mSmileyDialog;
+    private ProgressDialog mProgressDialog;
 
     private boolean mWaitingForSubActivity;
     private int mLastRecipientCount;            // Used for warning the user on too many recipients.
@@ -384,6 +387,15 @@ public class ComposeMessageActivity extends Activity
             }
 
             return false;
+        }
+    };
+
+    // Shows the activity's progress spinner. Should be canceled if exiting the activity.
+    private Runnable mShowProgressDialogRunnable = new Runnable() {
+        public void run() {
+            if (mProgressDialog != null) {
+                mProgressDialog.show();
+            }
         }
     };
 
@@ -505,6 +517,7 @@ public class ComposeMessageActivity extends Activity
         }
 
         public void onClick(DialogInterface dialog, int whichButton) {
+            PduCache.getInstance().purge(mDeleteUri);
             mBackgroundQueryHandler.startDelete(DELETE_MESSAGE_TOKEN,
                     null, mDeleteUri, mDeleteLocked ? null : "locked=0", null);
             dialog.dismiss();
@@ -757,16 +770,6 @@ public class ComposeMessageActivity extends Activity
             selEnd = textView.getSelectionEnd();
         }
 
-        if (selStart == -1) {
-            //sender is not being selected, it may be within the message body
-            textView = (TextView) msglistItem.findViewById(R.id.body_text_view);
-            if (textView != null) {
-                text = textView.getText();
-                selStart = textView.getSelectionStart();
-                selEnd = textView.getSelectionEnd();
-            }
-        }
-
         // Check that some text is actually selected, rather than the cursor
         // just being placed within the TextView.
         if (selStart != selEnd) {
@@ -1010,12 +1013,18 @@ public class ComposeMessageActivity extends Activity
     }
 
     private void editMmsMessageItem(MessageItem msgItem) {
+        // Load the selected message in as the working message.
+        WorkingMessage newWorkingMessage = WorkingMessage.load(this, msgItem.mMessageUri);
+        if (newWorkingMessage == null) {
+            return;
+        }
+
         // Discard the current message in progress.
         mWorkingMessage.discard();
 
-        // Load the selected message in as the working message.
-        mWorkingMessage = WorkingMessage.load(this, msgItem.mMessageUri);
+        mWorkingMessage = newWorkingMessage;
         mWorkingMessage.setConversation(mConversation);
+        invalidateOptionsMenu();
 
         drawTopPanel(false);
 
@@ -1059,7 +1068,7 @@ public class ComposeMessageActivity extends Activity
                 // Copy the parts of the message here.
                 uri = persister.persist(sendReq, Mms.Draft.CONTENT_URI);
             } catch (MmsException e) {
-                Log.e(TAG, "Failed to copy message: " + msgItem.mMessageUri, e);
+                Log.e(TAG, "Failed to copy message: " + msgItem.mMessageUri);
                 Toast.makeText(ComposeMessageActivity.this,
                         R.string.cannot_save_message, Toast.LENGTH_SHORT).show();
                 return;
@@ -1188,8 +1197,13 @@ public class ComposeMessageActivity extends Activity
      * @param msgId
      */
     private boolean haveSomethingToCopyToSDCard(long msgId) {
-        PduBody body = PduBodyCache.getPduBody(this,
-                ContentUris.withAppendedId(Mms.CONTENT_URI, msgId));
+        PduBody body = null;
+        try {
+            body = SlideshowModel.getPduBody(this,
+                        ContentUris.withAppendedId(Mms.CONTENT_URI, msgId));
+        } catch (MmsException e) {
+            Log.e(TAG, "haveSomethingToCopyToSDCard can't load pdu body: " + msgId);
+        }
         if (body == null) {
             return false;
         }
@@ -1224,35 +1238,18 @@ public class ComposeMessageActivity extends Activity
     }
 
     /**
-     * Simple cache to prevent having to load the same PduBody again and again for the same uri.
-     */
-    private static class PduBodyCache {
-        private static PduBody mLastPduBody;
-        private static Uri mLastUri;
-
-        static public PduBody getPduBody(Context context, Uri contentUri) {
-            if (contentUri.equals(mLastUri)) {
-                return mLastPduBody;
-            }
-            try {
-                mLastPduBody = SlideshowModel.getPduBody(context, contentUri);
-                mLastUri = contentUri;
-             } catch (MmsException e) {
-                 Log.e(TAG, e.getMessage(), e);
-                 return null;
-             }
-             return mLastPduBody;
-        }
-    };
-
-    /**
      * Copies media from an Mms to the DrmProvider
      * @param msgId
      */
     private boolean copyToDrmProvider(long msgId) {
         boolean result = true;
-        PduBody body = PduBodyCache.getPduBody(this,
-                ContentUris.withAppendedId(Mms.CONTENT_URI, msgId));
+        PduBody body = null;
+        try {
+            body = SlideshowModel.getPduBody(this,
+                        ContentUris.withAppendedId(Mms.CONTENT_URI, msgId));
+        } catch (MmsException e) {
+            Log.e(TAG, "copyToDrmProvider can't load pdu body: " + msgId);
+        }
         if (body == null) {
             return false;
         }
@@ -1307,8 +1304,13 @@ public class ComposeMessageActivity extends Activity
      * @param msgId
      */
     private String getDrmMimeType(long msgId) {
-        PduBody body = PduBodyCache.getPduBody(this,
-                ContentUris.withAppendedId(Mms.CONTENT_URI, msgId));
+        PduBody body = null;
+        try {
+            body = SlideshowModel.getPduBody(this,
+                        ContentUris.withAppendedId(Mms.CONTENT_URI, msgId));
+        } catch (MmsException e) {
+            Log.e(TAG, "getDrmMimeType can't load pdu body: " + msgId);
+        }
         if (body == null) {
             return null;
         }
@@ -1408,8 +1410,13 @@ public class ComposeMessageActivity extends Activity
      */
     private boolean copyMedia(long msgId) {
         boolean result = true;
-        PduBody body = PduBodyCache.getPduBody(this,
-                ContentUris.withAppendedId(Mms.CONTENT_URI, msgId));
+        PduBody body = null;
+        try {
+            body = SlideshowModel.getPduBody(this,
+                        ContentUris.withAppendedId(Mms.CONTENT_URI, msgId));
+        } catch (MmsException e) {
+            Log.e(TAG, "copyMedia can't load pdu body: " + msgId);
+        }
         if (body == null) {
             return false;
         }
@@ -1450,15 +1457,21 @@ public class ComposeMessageActivity extends Activity
                     // Use fallback name.
                     fileName = fallback;
                 } else {
+                    // For locally captured videos, fileName can end up being something like this:
+                    //      /mnt/sdcard/Android/data/com.android.mms/cache/.temp1.3gp
                     fileName = new String(location);
                 }
+                File originalFile = new File(fileName);
+                fileName = originalFile.getName();  // Strip the full path of where the "part" is
+                                                    // stored down to just the leaf filename.
+
                 // Depending on the location, there may be an
                 // extension already on the name or not
                 String dir = Environment.getExternalStorageDirectory() + "/"
                                 + Environment.DIRECTORY_DOWNLOADS  + "/";
                 String extension;
                 int index;
-                if ((index = fileName.indexOf(".")) == -1) {
+                if ((index = fileName.lastIndexOf('.')) == -1) {
                     String type = new String(part.getContentType());
                     extension = MimeTypeMap.getSingleton().getExtensionFromMimeType(type);
                 } else {
@@ -1718,7 +1731,7 @@ public class ComposeMessageActivity extends Activity
         mContentResolver = getContentResolver();
         mBackgroundQueryHandler = new BackgroundQueryHandler(mContentResolver);
 
-        initialize(0);
+        initialize(savedInstanceState, 0);
 
         if (TRACE) {
             android.os.Debug.startMethodTracing("compose");
@@ -1759,15 +1772,13 @@ public class ComposeMessageActivity extends Activity
         mTopPanel.setVisibility(anySubViewsVisible ? View.VISIBLE : View.GONE);
     }
 
-    public void initialize(long originalThreadId) {
-        Intent intent = getIntent();
-
+    public void initialize(Bundle savedInstanceState, long originalThreadId) {
         // Create a new empty working message.
         mWorkingMessage = WorkingMessage.createEmpty(this);
 
         // Read parameters or previously saved state of this activity. This will load a new
         // mConversation
-        initActivityState(intent);
+        initActivityState(savedInstanceState);
 
         if (LogTag.SEVERE_WARNING && originalThreadId != 0 &&
                 originalThreadId == mConversation.getThreadId()) {
@@ -1775,8 +1786,8 @@ public class ComposeMessageActivity extends Activity
                     " threadId didn't change from: " + originalThreadId, this);
         }
 
-        log(" intent = " + intent +
-            "originalThreadId = " + originalThreadId +
+        log("savedInstanceState = " + savedInstanceState +
+            " intent = " + getIntent() +
             " mConversation = " + mConversation);
 
         if (cancelFailedToDeliverNotification(getIntent(), this)) {
@@ -1792,15 +1803,18 @@ public class ComposeMessageActivity extends Activity
         // Load the draft for this thread, if we aren't already handling
         // existing data, such as a shared picture or forwarded message.
         boolean isForwardedMessage = false;
-        if (!handleSendIntent(intent)) {
-            isForwardedMessage = handleForwardedMessage();
-            if (!isForwardedMessage) {
-                loadDraft();
-            }
+        // We don't attempt to handle the Intent.ACTION_SEND when saveInstanceState is non-null.
+        // saveInstanceState is non-null when this activity is killed. In that case, we already
+        // handled the attachment or the send, so we don't try and parse the intent again.
+        boolean intentHandled = savedInstanceState == null &&
+            (handleSendIntent() || handleForwardedMessage());
+        if (!intentHandled) {
+            loadDraft();
         }
 
         // Let the working message know what conversation it belongs to
         mWorkingMessage.setConversation(mConversation);
+        invalidateOptionsMenu();
 
         // Show the recipients editor if we don't have a valid thread. Hide it otherwise.
         if (mConversation.getThreadId() <= 0) {
@@ -1903,6 +1917,7 @@ public class ComposeMessageActivity extends Activity
             if (mConversation.getThreadId() == 0) {
                 mConversation = conversation;
                 mWorkingMessage.setConversation(mConversation);
+                invalidateOptionsMenu();
             }
             mConversation.markAsRead();         // dismiss any notifications for this convo
         } else {
@@ -1911,7 +1926,7 @@ public class ComposeMessageActivity extends Activity
             }
             saveDraft(false);    // if we've got a draft, save it first
 
-            initialize(originalThreadId);
+            initialize(null, originalThreadId);
         }
         loadMessageContent();
     }
@@ -1954,6 +1969,7 @@ public class ComposeMessageActivity extends Activity
                 loadDraft();
                 mWorkingMessage.setConversation(mConversation);
                 mAttachmentEditor.update(mWorkingMessage);
+                invalidateOptionsMenu();
             }
         }
     }
@@ -2007,6 +2023,19 @@ public class ComposeMessageActivity extends Activity
     }
 
     @Override
+    public void onSaveInstanceState(Bundle outState) {
+        super.onSaveInstanceState(outState);
+
+        outState.putString("recipients", getRecipients().serialize());
+
+        mWorkingMessage.writeStateToBundle(outState);
+
+        if (mExitOnSent) {
+            outState.putBoolean("exit_on_sent", mExitOnSent);
+        }
+    }
+
+    @Override
     protected void onResume() {
         super.onResume();
 
@@ -2043,6 +2072,8 @@ public class ComposeMessageActivity extends Activity
         //Contact.stopPresenceObserver();
 
         removeRecipientsListeners();
+
+        clearPendingProgressDialog();
     }
 
     @Override
@@ -2333,6 +2364,8 @@ public class ComposeMessageActivity extends Activity
 
     @Override
     public boolean onPrepareOptionsMenu(Menu menu) {
+        super.onPrepareOptionsMenu(menu) ;
+
         menu.clear();
 
         if (isRecipientCallable()) {
@@ -2360,8 +2393,10 @@ public class ComposeMessageActivity extends Activity
             menu.add(0, MENU_SEND, 0, R.string.send).setIcon(android.R.drawable.ic_menu_send);
         }
 
-        menu.add(0, MENU_INSERT_SMILEY, 0, R.string.menu_insert_smiley).setIcon(
-                R.drawable.ic_menu_emoticons);
+        if (!mWorkingMessage.hasSlideshow()) {
+            menu.add(0, MENU_INSERT_SMILEY, 0, R.string.menu_insert_smiley).setIcon(
+                    R.drawable.ic_menu_emoticons);
+        }
 
         if (mMsgListAdapter.getCount() > 0) {
             // Removed search as part of b/1205708
@@ -2630,6 +2665,7 @@ public class ComposeMessageActivity extends Activity
                         mWorkingMessage.setConversation(mConversation);
                         drawTopPanel(false);
                         updateSendButtonState();
+                        invalidateOptionsMenu();
                     }
                 }
                 break;
@@ -2638,27 +2674,27 @@ public class ComposeMessageActivity extends Activity
                 // create a file based uri and pass to addImage(). We want to read the JPEG
                 // data directly from file (using UriImage) instead of decoding it into a Bitmap,
                 // which takes up too much memory and could easily lead to OOM.
-                File file = new File(TempFileProvider.getScrapPath());
+                File file = new File(TempFileProvider.getScrapPath(this));
                 Uri uri = Uri.fromFile(file);
-                addImage(uri, false);
+                addImageAsync(uri, false);
                 break;
             }
 
             case REQUEST_CODE_ATTACH_IMAGE: {
                 if (data != null) {
-                    addImage(data.getData(), false);
+                    addImageAsync(data.getData(), false);
                 }
                 break;
             }
 
             case REQUEST_CODE_TAKE_VIDEO:
-                Uri videoUri = TempFileProvider.renameScrapFile(".3gp", null);
-                addVideo(videoUri, false);      // can handle null videoUri
+                Uri videoUri = TempFileProvider.renameScrapFile(".3gp", null, this);
+                addVideoAsync(videoUri, false);      // can handle null videoUri
                 break;
 
             case REQUEST_CODE_ATTACH_VIDEO:
                 if (data != null) {
-                    addVideo(data.getData(), false);
+                    addVideoAsync(data.getData(), false);
                 }
                 break;
 
@@ -2821,6 +2857,14 @@ public class ComposeMessageActivity extends Activity
         });
     }
 
+    private void addImageAsync(final Uri uri, final boolean append) {
+        runAsyncWithDialog(new Runnable() {
+            public void run() {
+                addImage(uri, append);
+            }
+        }, R.string.adding_attachments_title);
+    }
+
     private void addImage(Uri uri, boolean append) {
         if (Log.isLoggable(LogTag.APP, Log.VERBOSE)) {
             log("append=" + append + ", uri=" + uri);
@@ -2833,11 +2877,19 @@ public class ComposeMessageActivity extends Activity
             if (Log.isLoggable(LogTag.APP, Log.VERBOSE)) {
                 log("resize image " + uri);
             }
-            MessageUtils.resizeImageAsync(this,
+            MessageUtils.resizeImageAsync(ComposeMessageActivity.this,
                     uri, mAttachmentEditorHandler, mResizeImageCallback, append);
             return;
         }
         handleAddAttachmentError(result, R.string.type_picture);
+    }
+
+    private void addVideoAsync(final Uri uri, final boolean append) {
+        runAsyncWithDialog(new Runnable() {
+            public void run() {
+                addVideo(uri, append);
+            }
+        }, R.string.adding_attachments_title);
     }
 
     private void addVideo(Uri uri, boolean append) {
@@ -2850,6 +2902,91 @@ public class ComposeMessageActivity extends Activity
     private void addAudio(Uri uri) {
         int result = mWorkingMessage.setAttachment(WorkingMessage.AUDIO, uri, false);
         handleAddAttachmentError(result, R.string.type_audio);
+    }
+
+    /**
+     * Asynchronously executes a task while blocking the UI with a progress spinner.
+     *
+     * Must be invoked by the UI thread.  No exceptions!
+     *
+     * @param task the work to be done wrapped in a Runnable
+     * @param dialogStringId the id of the string to be shown in the dialog
+     */
+    private void runAsyncWithDialog(final Runnable task, final int dialogStringId) {
+        new ModalDialogAsyncTask(dialogStringId).execute(new Runnable[] {task});
+    }
+
+    /**
+     * Asynchronously performs tasks specified by Runnables.
+     * Displays a progress spinner while the tasks are running.  The progress spinner
+     * will only show if tasks have not finished after a certain amount of time.
+     *
+     * This AsyncTask must be instantiated and invoked on the UI thread.
+     */
+    private class ModalDialogAsyncTask extends AsyncTask<Runnable, Void, Void> {
+        final int mDialogStringId;
+
+        /**
+         * Creates the Task with the specified string id to be shown in the dialog
+         */
+        public ModalDialogAsyncTask(int dialogStringId) {
+            this.mDialogStringId = dialogStringId;
+            // lazy initialization of progress dialog for loading attachments
+            if (mProgressDialog == null) {
+                mProgressDialog = createProgressDialog();
+            }
+        }
+
+        /**
+         * Initializes the progress dialog with its intended settings.
+         */
+        private ProgressDialog createProgressDialog() {
+            ProgressDialog dialog = new ProgressDialog(ComposeMessageActivity.this);
+            dialog.setIndeterminate(true);
+            dialog.setProgressStyle(ProgressDialog.STYLE_SPINNER);
+            dialog.setCanceledOnTouchOutside(false);
+            dialog.setCancelable(false);
+            dialog.setMessage(ComposeMessageActivity.this.
+                    getText(mDialogStringId));
+            return dialog;
+        }
+
+        /**
+         * Activates a progress spinner on the UI.  This assumes the UI has invoked this Task.
+         */
+        @Override
+        protected void onPreExecute() {
+            // activate spinner after half a second
+            mAttachmentEditorHandler.postDelayed(mShowProgressDialogRunnable, 500);
+        }
+
+        /**
+         * Perform the specified Runnable tasks on a background thread
+         */
+        @Override
+        protected Void doInBackground(Runnable... params) {
+            if (params != null) {
+                try {
+                    for (int i = 0; i < params.length; i++) {
+                        params[i].run();
+                    }
+                } finally {
+                    // Cancel pending display of the progress bar if the image has finished loading.
+                    mAttachmentEditorHandler.removeCallbacks(mShowProgressDialogRunnable);
+                }
+            }
+            return null;
+        }
+
+        /**
+         * Deactivates the progress spinner on the UI. This assumes the UI has invoked this Task.
+         */
+        @Override
+        protected void onPostExecute(Void result) {
+            if (mProgressDialog != null && mProgressDialog.isShowing()) {
+                mProgressDialog.dismiss();
+            }
+        }
     }
 
     private boolean handleForwardedMessage() {
@@ -2880,7 +3017,9 @@ public class ComposeMessageActivity extends Activity
         return true;
     }
 
-    private boolean handleSendIntent(Intent intent) {
+    // Handle send actions, where we're told to send a picture(s) or text.
+    private boolean handleSendIntent() {
+        Intent intent = getIntent();
         Bundle extras = intent.getExtras();
         if (extras == null) {
             return false;
@@ -2890,8 +3029,12 @@ public class ComposeMessageActivity extends Activity
         String action = intent.getAction();
         if (Intent.ACTION_SEND.equals(action)) {
             if (extras.containsKey(Intent.EXTRA_STREAM)) {
-                Uri uri = (Uri)extras.getParcelable(Intent.EXTRA_STREAM);
-                addAttachment(mimeType, uri, false);
+                final Uri uri = (Uri)extras.getParcelable(Intent.EXTRA_STREAM);
+                runAsyncWithDialog(new Runnable() {
+                    public void run() {
+                        addAttachment(mimeType, uri, false);
+                    }
+                }, R.string.adding_attachments_title);
                 return true;
             } else if (extras.containsKey(Intent.EXTRA_TEXT)) {
                 mWorkingMessage.setText(extras.getString(Intent.EXTRA_TEXT));
@@ -2912,39 +3055,20 @@ public class ComposeMessageActivity extends Activity
                                 Toast.LENGTH_LONG).show();
             }
 
-            // Attach all the pictures/videos off of the UI thread.
-            // Show a progress alert if adding all the slides hasn't finished
-            // within one second.
-            // Stash the runnable for showing it away so we can cancel
-            // it later if adding completes ahead of the deadline.
-            final AlertDialog dialog = new AlertDialog.Builder(ComposeMessageActivity.this)
-                .setIcon(android.R.drawable.ic_dialog_alert)
-                .setTitle(R.string.adding_attachments_title)
-                .setMessage(R.string.adding_attachments)
-                .create();
-            final Runnable showProgress = new Runnable() {
-                public void run() {
-                    dialog.show();
-                }
-            };
-            // Schedule it for one second from now.
-            mAttachmentEditorHandler.postDelayed(showProgress, 1000);
-
+            // Attach all the pictures/videos asynchronously off of the UI thread.
+            // Show a progress dialog if adding all the slides hasn't finished
+            // within half a second.
             final int numberToImport = importCount;
-            new Thread(new Runnable() {
+            runAsyncWithDialog(new Runnable() {
                 public void run() {
                     for (int i = 0; i < numberToImport; i++) {
                         Parcelable uri = uris.get(i);
                         addAttachment(mimeType, (Uri) uri, true);
                     }
-                    // Cancel pending show of the progress alert if necessary.
-                    mAttachmentEditorHandler.removeCallbacks(showProgress);
-                    dialog.dismiss();
                 }
-            }, "addAttachment").start();
+            }, R.string.adding_attachments_title);
             return true;
         }
-
         return false;
     }
 
@@ -3148,9 +3272,6 @@ public class ComposeMessageActivity extends Activity
 
     private void confirmDeleteDialog(OnClickListener listener, boolean locked) {
         AlertDialog.Builder builder = new AlertDialog.Builder(this);
-        builder.setTitle(locked ? R.string.confirm_dialog_locked_title :
-            R.string.confirm_dialog_title);
-        builder.setIcon(android.R.drawable.ic_dialog_alert);
         builder.setCancelable(true);
         builder.setMessage(locked ? R.string.confirm_delete_locked_message :
                     R.string.confirm_delete_message);
@@ -3161,8 +3282,6 @@ public class ComposeMessageActivity extends Activity
 
     void undeliveredMessageDialog(long date) {
         String body;
-        LinearLayout dialog = (LinearLayout) LayoutInflater.from(this).inflate(
-                R.layout.retry_sending_dialog, null);
 
         if (date >= 0) {
             body = getString(R.string.undelivered_msg_dialog_body,
@@ -3172,12 +3291,7 @@ public class ComposeMessageActivity extends Activity
             body = getString(R.string.undelivered_sms_dialog_body);
         }
 
-        ((TextView) dialog.findViewById(R.id.body_text_view)).setText(body);
-
-        Toast undeliveredDialog = new Toast(this);
-        undeliveredDialog.setView(dialog);
-        undeliveredDialog.setDuration(Toast.LENGTH_LONG);
-        undeliveredDialog.show();
+        Toast.makeText(this, body, Toast.LENGTH_LONG).show();
     }
 
     private void startMsgListQuery() {
@@ -3398,6 +3512,7 @@ public class ComposeMessageActivity extends Activity
 
         mLastRecipientCount = 0;
         mSendingMessage = false;
+        invalidateOptionsMenu();
    }
 
     private void updateSendButtonState() {
@@ -3437,7 +3552,21 @@ public class ComposeMessageActivity extends Activity
         return NO_DATE_FOR_DIALOG;
     }
 
-    private void initActivityState(Intent intent) {
+    private void initActivityState(Bundle bundle) {
+        Intent intent = getIntent();
+        if (bundle != null) {
+            setIntent(getIntent().setAction(Intent.ACTION_VIEW));
+            String recipients = bundle.getString("recipients");
+            if (LogTag.VERBOSE) log("get mConversation by recipients " + recipients);
+            mConversation = Conversation.get(this,
+                    ContactList.getByNumbers(recipients,
+                            false /* don't block */, true /* replace number */), false);
+            addRecipientsListeners();
+            mExitOnSent = bundle.getBoolean("exit_on_sent", false);
+            mWorkingMessage.readStateFromBundle(bundle);
+            return;
+        }
+
         // If we have been passed a thread_id, use that to find our conversation.
         long threadId = intent.getLongExtra("thread_id", 0);
         if (threadId > 0) {
@@ -3576,6 +3705,8 @@ public class ComposeMessageActivity extends Activity
                     mTextEditor.requestFocus();
 
                     mConversation.blockMarkAsRead(false);
+
+                    invalidateOptionsMenu();    // some menu items depend on the adapter's count
                     return;
 
                 case ConversationList.HAVE_LOCKED_MESSAGES_TOKEN:
@@ -3728,6 +3859,13 @@ public class ComposeMessageActivity extends Activity
 
     private void removeRecipientsListeners() {
         Contact.removeListener(this);
+    }
+
+    private void clearPendingProgressDialog() {
+        // remove any callback to display a progress spinner
+        mAttachmentEditorHandler.removeCallbacks(mShowProgressDialogRunnable);
+        // clear the dialog so any pending dialog.dismiss() call can be avoided
+        mProgressDialog = null;
     }
 
     public static Intent createIntent(Context context, long threadId) {

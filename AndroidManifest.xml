@@ -63,6 +63,7 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
                 <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.APP_MESSAGING" />
             </intent-filter>
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -172,6 +173,7 @@
 
         <activity android:name=".ui.MessagingPreferenceActivity"
             android:theme="@style/MmsHoloTheme"
+            android:configChanges="orientation|screenSize|keyboardHidden"
             android:label="@string/preferences_title" />
 
         <receiver android:name=".transaction.PushReceiver"
@@ -290,6 +292,13 @@
         <provider android:name="TempFileProvider"
                   android:authorities="mms_temp_file"
                   android:multiprocess="true" />
+
+        <activity android:name=".ui.MiniPreferenceActivity" >
+            <intent-filter>
+                <action android:name="com.android.mms.intent.action.MESSAGING_APP_NOTIFICATIONS" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
 
     </application>
 </manifest>

@@ -50,6 +50,7 @@ import android.media.AudioManager;
 import android.net.Uri;
 import android.os.Handler;
 import android.preference.PreferenceManager;
+import android.provider.Settings;
 import android.provider.Telephony.Mms;
 import android.provider.Telephony.Sms;
 import android.text.Spannable;
@@ -300,6 +301,13 @@ public class MessagingNotification {
             Uri msgUri = Mms.CONTENT_URI.buildUpon().appendPath(
                     Long.toString(msgId)).build();
             String address = AddressUtils.getFrom(context, msgUri);
+
+            Contact contact = Contact.get(address, false);
+            if (contact.getSendToVoicemail()) {
+                // don't notify
+                return null;
+            }
+
             String subject = getMmsSubject(
                     cursor.getString(COLUMN_SUBJECT), cursor.getInt(COLUMN_SUBJECT_CS));
             long threadId = cursor.getLong(COLUMN_THREAD_ID);
@@ -368,11 +376,18 @@ public class MessagingNotification {
             }
 
             String address = cursor.getString(COLUMN_SMS_ADDRESS);
+
+            Contact contact = Contact.get(address, false);
+            if (contact.getSendToVoicemail()) {
+                // don't notify
+                return null;
+            }
+
             String body = cursor.getString(COLUMN_SMS_BODY);
             long threadId = cursor.getLong(COLUMN_THREAD_ID);
             long timeMillis = cursor.getLong(COLUMN_DATE);
 
-            if (Log.isLoggable(LogTag.APP, Log.VERBOSE)) 
+            if (Log.isLoggable(LogTag.APP, Log.VERBOSE))
             {
                 Log.d(TAG, "getSmsNewMessageNotificationInfo: count=" + cursor.getCount() +
                         ", first addr=" + address + ", thread_id=" + threadId);
@@ -434,9 +449,8 @@ public class MessagingNotification {
             return;
         }
 
-        SharedPreferences sp = PreferenceManager.getDefaultSharedPreferences(context);
 
-        if (!sp.getBoolean(MessagingPreferenceActivity.NOTIFICATION_ENABLED, true)) {
+        if (!MessagingPreferenceActivity.getNotificationEnabled(context)) {
             return;
         }
 
@@ -458,9 +472,7 @@ public class MessagingNotification {
             String title,
             int messageCount,
             int uniqueThreadCount) {
-        SharedPreferences sp = PreferenceManager.getDefaultSharedPreferences(context);
-
-        if (!sp.getBoolean(MessagingPreferenceActivity.NOTIFICATION_ENABLED, true)) {
+        if (!MessagingPreferenceActivity.getNotificationEnabled(context)) {
             return;
         }
 
@@ -497,6 +509,7 @@ public class MessagingNotification {
         notification.setLatestEventInfo(context, title, description, pendingIntent);
 
         if (isNew) {
+            SharedPreferences sp = PreferenceManager.getDefaultSharedPreferences(context);
             String vibrateWhen;
             if (sp.contains(MessagingPreferenceActivity.NOTIFICATION_VIBRATE_WHEN)) {
                 vibrateWhen =
@@ -587,9 +600,7 @@ public class MessagingNotification {
     private static void notifyFailed(Context context, boolean isDownload, long threadId,
                                      boolean noisy) {
         // TODO factor out common code for creating notifications
-        SharedPreferences sp = PreferenceManager.getDefaultSharedPreferences(context);
-
-        boolean enabled = sp.getBoolean(MessagingPreferenceActivity.NOTIFICATION_ENABLED, true);
+        boolean enabled = MessagingPreferenceActivity.getNotificationEnabled(context);
         if (!enabled) {
             return;
         }
@@ -656,6 +667,7 @@ public class MessagingNotification {
         notification.setLatestEventInfo(context, title, description, pendingIntent);
 
         if (noisy) {
+            SharedPreferences sp = PreferenceManager.getDefaultSharedPreferences(context);
             boolean vibrate = sp.getBoolean(MessagingPreferenceActivity.NOTIFICATION_VIBRATE,
                     false /* don't vibrate by default */);
             if (vibrate) {
@@ -765,6 +777,4 @@ public class MessagingNotification {
     public static boolean isFailedToDownload(Intent intent) {
         return (intent != null) && intent.getBooleanExtra("failed_download_flag", false);
     }
-
-
 }
